@@ -1,0 +1,245 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use DB;
+use Redirect;
+use App\models\User;
+use App\models\tbl_informasi;
+use App\models\tbl_detail_mentor;
+use App\models\tbl_reservasi;
+use App\models\detail_skill;
+use App\models\detail_hari;
+use App\models\master_kebutuhan;
+use App\models\detail_tipe_pengajaran;
+use App\models\pembayaran_reservasi;
+use App\models\ulasan_mentor;
+use App\models\detail_reservasi;
+
+class UserReservasiController extends Controller
+{
+  public function cari_mentor()
+  {
+      if(auth()->user()->level_id == 2){
+        $data_mentor = tbl_detail_mentor::where('status_id',2)->where('user_id','<>',auth()->user()->id)->paginate(1);
+      }else{
+        $data_mentor = tbl_detail_mentor::where('status_id',2)->paginate(1);
+        // $data_mentor = DB::connection()->select("select * from tbl_detail_mentor where status_id = 2");
+        $skill = DB::connection()->select("select c.skill
+                                            FROM tbl_detail_mentor a
+                                               LEFT JOIN detail_skill b ON  b.detail_mentor_id = a.id
+                                               JOIN master_skill c ON b.skill_id = c.id");
+      }
+      // array_push($data_mentor, $skill);
+      // dd($data_mentor);
+      return view('reservasi_user.cari_mentor', compact('data_mentor'));
+  }
+
+  public function cari_data_mentor(Request $request)
+  {
+    // dd($request->all());
+    $subject = $request->subject;
+    $alamat = $request->alamat;
+    // $data_mentor = tbl_detail_mentor::join('master_user as a','tbl_detail_mentor.user_id','=','a.id')
+    //                                   ->join('detail_alamat as b','a.detail_alamat_id','=','b.id')
+    //                                   ->where('tbl_detail_mentor.status_id',2);
+    // if($subject != null){
+    //   $data_mentor = $data_mentor->where('a.nama','like','%'.$subject.'%');
+    // }elseif($alamat != null){
+    //   $data_mentor = $data_mentor->where('b.kota','like','%'.$alamat.'%');
+    // }else{
+    //   $data_mentor = $data_mentor;
+    // }
+    // if(auth()->user()->level_id == 2){
+    //   $data_mentor = $data_mentor->where('a.id','<>',auth()->user()->id)
+    //                              ->select('tbl_detail_mentor.id','a.nama','a.fhoto','a.path_fhoto','b.kota',
+    //                                       'tbl_detail_mentor.harga_perjam','tbl_detail_mentor.detail_skill')
+    //                              ->paginate(1);
+    // }else{
+    //   $data_mentor = $data_mentor->select('tbl_detail_mentor.id','a.nama','a.fhoto','a.path_fhoto','b.kota',
+    //                                       'tbl_detail_mentor.harga_perjam','tbl_detail_mentor.detail_skill')
+    //                              ->paginate(1);
+    // }
+    // $data_mentor = json_encode($data_mentor);
+    $array = (array) $data_mentor;
+    dd($data_mentor->id);
+    $data_mentor = DB::connection()->select("select a.id, b.nama, b.fhoto, b.path_fhoto, c.kota, a.harga_perjam,
+                                                    a.detail_skill
+                                            FROM tbl_detail_mentor a,
+                                                 MASTER_USER b,
+                                                 detail_alamat c
+                                            WHERE a.user_id = b.id
+                                            AND b.detail_alamat_id = c.id
+                                            AND b.nama LIKE '%$subject%'
+                                            AND c.kota LIKE '%$alamat%'");
+    return json_encode(['response' => "success",
+                        'data_mentor' => $data_mentor]);
+  }
+
+  public function pengajuan($id)
+  {
+    $detail_mentor = DB::connection()->table('master_user as a')
+                                  ->leftjoin('tbl_detail_mentor as b','a.id','=','b.user_id')
+                                  ->join('detail_alamat as c','c.id','=','a.detail_alamat_id')
+                                  ->where('b.id',$id)
+                                  ->select('a.id as id_user','a.nama','a.no_hp','a.fhoto','a.path_fhoto','b.id as id_detail_mentor','b.user_id as id_mentor',
+                                          'b.detail_skill','b.biodata','b.detail_pengajaran','b.pengalaman_ngajar','b.harga_perjam','b.medsos_linkedin',
+                                          'b.medsos_github','b.instagram','c.kota')
+                                  ->first();
+    $detail_skill = detail_skill::where('detail_mentor_id',$detail_mentor->id_detail_mentor)->get();
+    $detail_hari = detail_hari::where('detail_mentor_id',$detail_mentor->id_detail_mentor)->get();
+    $detail_tipe_pengajaran = detail_tipe_pengajaran::where('detail_mentor_id',$detail_mentor->id_detail_mentor)->get();
+    return view('reservasi_user.pengajuan_reservasi_user', compact('detail_mentor','detail_skill','detail_hari','detail_tipe_pengajaran'));
+  }
+
+  public function pengajuan_reservasi($id)
+  {
+      $data_mentor = tbl_detail_mentor::find($id);
+      $hari = detail_hari::where('detail_mentor_id',$id)->get();
+      $kebutuhan = master_kebutuhan::whereIn('id',[1,2,3])->get();
+      return view('reservasi_user.mulai_pengajuan_user', compact('data_mentor','hari','kebutuhan'));
+  }
+
+  public function store(Request $request)
+  {
+      DB::beginTransaction();
+      $sub_total = preg_replace("/[^0-9]/", "", $request->sub_total);
+      if($request->kebutuhan == 99 && $request->spek_kebutuhan != null){
+        $create_kebutuhan = new master_kebutuhan;
+        $create_kebutuhan->kebutuhan = $request->kebutuhan_lainnya;
+        $create_kebutuhan->save();
+        $id_kebutuhan = $create_kebutuhan->id;
+      }else{
+        $id_kebutuhan = $request->kebutuhan;
+      }
+      $pengajuan_reservasi = new tbl_reservasi;
+      $pengajuan_reservasi->user_id = auth()->user()->id;
+      $pengajuan_reservasi->mentor_id = $request->id_mentor;
+      $pengajuan_reservasi->kebutuhan_id = $id_kebutuhan;
+      $pengajuan_reservasi->detail_kebutuhan = $request->spek_kebutuhan;
+      $pengajuan_reservasi->jumlah_jam = $request->jumlah_jam;
+      $pengajuan_reservasi->tipe_pengajaran = $request->tipe_pengajaran;
+      $pengajuan_reservasi->total_biaya = $sub_total;
+      $pengajuan_reservasi->status_id = 3;
+      if($pengajuan_reservasi->save()){
+        $hari = $request->hari_dibutuhkan;
+        $detail_hari = detail_hari::whereIn('id',$hari)->get();
+        foreach($detail_hari as $key => $val){
+          $detail_reservasi = new detail_reservasi;
+          $detail_reservasi->reservasi_id = $pengajuan_reservasi->id;
+          $detail_reservasi->hari_id = $val->hari_id;
+          $detail_reservasi->start_jam = $val->start_jam;
+          $detail_reservasi->end_jam = $val->end_jam;
+          $detail_reservasi->save();
+        }
+        DB::commit();
+        return redirect('/cari_mentor')->with('success', 'Pengajuan Reservasi Anda Success !!!');
+      }else{
+        DB::rollback();
+        return Redirect::back()->with('failed', 'Pengajuan Reservasi Anda Failed, Silahkan Cek Kembali Data Anda !!!');
+      }
+  }
+
+  public function index()
+  {
+      $history_reservasi = tbl_reservasi::where('user_id',auth()->user()->id)
+                                      ->orderby('id','desc')
+                                      ->get();
+      $tbl_informasi = tbl_informasi::all();
+      return view('reservasi_user.history_reservasi', compact('history_reservasi','tbl_informasi'));
+  }
+
+  public function detail($id)
+  {
+      $detail_reservasi = tbl_reservasi::find($id);
+      $detail_mentor = DB::connection()->table('master_user as a')
+                                    ->leftjoin('tbl_detail_mentor as b','a.id','=','b.user_id')
+                                    ->join('detail_alamat as c','c.id','=','a.detail_alamat_id')
+                                    ->where('a.id',$detail_reservasi->mentor_id)
+                                    ->select('a.id as id_user','a.nama','a.no_hp','a.fhoto','a.path_fhoto','b.id as id_detail_mentor','b.detail_skill',
+                                            'b.biodata','b.detail_pengajaran','b.pengalaman_ngajar','harga_perjam','b.medsos_linkedin','b.medsos_github',
+                                            'b.instagram','c.kota')
+                                    ->first();
+      $detail_skill = detail_skill::where('detail_mentor_id',$detail_mentor->id_detail_mentor)->get();
+      $detail_hari = detail_hari::where('detail_mentor_id',$detail_mentor->id_detail_mentor)->get();
+      $detail_tipe_pengajaran = detail_tipe_pengajaran::where('detail_mentor_id',$detail_mentor->id_detail_mentor)->get();
+      $jadwal_reservasi = detail_reservasi::where('reservasi_id',$id)->get();
+      return view('reservasi_user.detail_reservasi_user', compact('detail_reservasi','detail_mentor','detail_skill','detail_hari','detail_tipe_pengajaran','jadwal_reservasi'));
+  }
+
+  public function get_data_reservasi(Request $request)
+  {
+      $data_reservasi = tbl_reservasi::find($request->id_reservasi);
+      return json_encode(['response'  => "success",
+                          'data_reservasi'  => $data_reservasi]);
+  }
+
+  public function pembayaran(Request $request)
+  {
+      DB::beginTransaction();
+      $bukti = $request->file('bukti_transfer');
+      $tujuan_upload = 'Pembayaran_Reservasi';
+      $sub_path = time();
+      $upload = $bukti->getClientOriginalName();
+      $extension =$bukti->getClientOriginalExtension();
+      $path =$bukti->getRealPath();
+      $bukti->move($tujuan_upload.'/'.$sub_path, $upload);
+
+      $create_data_pembayaran = new pembayaran_reservasi;
+      $create_data_pembayaran->bukti_transfer = $upload;
+      $create_data_pembayaran->path_bukti = $sub_path;
+      $create_data_pembayaran->atas_nama_pengirim = $request->atas_nama_pengirim;
+      $create_data_pembayaran->asal_bank = $request->asal_bank;
+      if($create_data_pembayaran->save()){
+        $bayar = tbl_reservasi::find($request->id_reservasi);
+        $bayar->pembayaran_id = $create_data_pembayaran->id;
+        $bayar->status_id = 8;
+        if($bayar->save()){
+          DB::commit();
+          return Redirect::back()->with('success', 'Upload Bukti Pembayaran Success, Mohon Menunggu Konfirmasi !!!');
+        }else{
+          DB::rollback();
+          return Redirect::back()->with('failed', 'Upload Bukti Pembayaran Failed, Silahkan Cek Kembali Data Anda !!!');
+        }
+      }else{
+        DB::rollback();
+        return Redirect::back()->with('failed', 'Upload Bukti Pembayaran Failed, Silahkan Cek Kembali Data Anda !!!');
+      }
+  }
+
+  public function get_data_mentor(Request $request)
+  {
+      $data_reservasi = tbl_reservasi::join('master_user','tbl_reservasi.mentor_id','=','master_user.id')
+                                      ->leftjoin('tbl_detail_mentor','tbl_detail_mentor.user_id','=','master_user.id')
+                                      ->join('master_gender','master_user.gender_id','=','master_gender.id')
+                                      ->where('tbl_reservasi.id',$request->id_reservasi)
+                                      ->select('tbl_reservasi.id as id_reservasi','tbl_detail_mentor.pengalaman_ngajar','tbl_detail_mentor.harga_perjam','master_user.*','master_gender.gender')
+                                      ->first();
+      return json_encode(['response'  => "success",
+                          'data'  => $data_reservasi]);
+  }
+
+  public function ulasan(Request $request)
+  {
+    DB::beginTransaction();
+    $ulas = new ulasan_mentor;
+    $ulas->reservasi_id = $request->id_reservasi;
+    $ulas->bintang = 5;
+    $ulas->ulasan = $request->ulasan;
+    if($ulas->save()){
+      $update = tbl_reservasi::find($request->id_reservasi);
+      $update->status_id = 12;
+      if($update->save()){
+        DB::commit();
+        return Redirect::back()->with('success', 'Ulas Hasil Pembelajaran Success, Terima Kasih !!!');
+      }else{
+        DB::rollback();
+        return Redirect::back()->with('failed', 'Ulas Hasil Pembelajaran Failed, Silahkan Cek Kembali Data Anda !!!');
+      }
+    }else{
+      DB::rollback();
+      return Redirect::back()->with('failed', 'Ulas Hasil Pembelajaran Failed, Silahkan Cek Kembali Data Anda !!!');
+    }
+  }
+}
